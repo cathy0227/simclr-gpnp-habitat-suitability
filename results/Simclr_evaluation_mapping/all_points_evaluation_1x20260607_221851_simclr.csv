@@ -1,0 +1,12 @@
+Metric,Value,Description
+AUC,0.8547,Area Under ROC Curve
+PR_AUC,0.8292,Area Under Precision-Recall Curve
+TSS,0.5636,True Skill Statistic
+SPECIFICITY,0.7222,True Negative Rate
+ECE,0.1416,Expected Calibration Error
+THRESHOLD,0.3502,TSS-maximizing classification threshold
+,,
+Model Configuration,,
+Architecture: SimCLR + RandomForest + sigmoid (Platt) calibration,,
+"Spatial CV: enabled, block size 50km, 5 folds",,
+Threshold selection: TSS-maximizing,,

@@ -1,0 +1,12 @@
+Metric,Mean,Std_Dev,Min,Max,Median
+AUC,0.7328,0.0168,0.7068,0.7551,0.7342
+PR_AUC,0.6703,0.0622,0.5624,0.7317,0.6887
+TSS,0.3763,0.0055,0.3657,0.3804,0.3792
+SPECIFICITY,0.5822,0.0404,0.5168,0.6310,0.5914
+ECE,0.0465,0.0062,0.0392,0.0541,0.0434
+,,,,,
+Configuration,,,,,
+Total_Folds,5,,,,
+Spatial_CV,True,,,,
+Block_Size_km,50,,,,
+Calibration_Method,sigmoid,,,,

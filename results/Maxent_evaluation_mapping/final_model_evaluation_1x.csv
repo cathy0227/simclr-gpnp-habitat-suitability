@@ -1,0 +1,7 @@
+Metric,Value,Note
+ROC-AUC,0.8229601485403844,Area Under ROC Curve
+PR-AUC,0.8185587994615858,Area Under Precision-Recall Curve
+TSS,0.48244335178626696,True Skill Statistic
+Specificity,0.7336244541484717,True Negative Rate
+ECE,0.07945643955557243,Expected Calibration Error
+Threshold,0.44835122927739884,Optimal Classification Threshold
