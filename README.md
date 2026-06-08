@@ -48,9 +48,14 @@ simclr-gpnp-habitat-suitability/
 
 ## Data Availability
 
-The full occurrence dataset is not publicly available because it contains sensitive location information for a threatened species.
+Environmental predictor datasets are available on Zenodo:
 
-Example datasets and input formats will be provided where possible.
+https://zenodo.org/records/19308437
+
+The repository also includes the environmental table used for model development and evaluation.
+
+Original giant panda occurrence coordinates are not publicly distributed.
+
 
 ## Status
 
