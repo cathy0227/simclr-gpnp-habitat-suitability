@@ -1,2 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<metadata xml:lang="zh"><Esri><CreaDate>20260424</CreaDate><CreaTime>11004500</CreaTime><ArcGISFormat>1.0</ArcGISFormat><SyncOnce>TRUE</SyncOnce><DataProperties><lineage><Process ToolSource="c:\program files\arcgis\pro\Resources\ArcToolbox\toolboxes\Conversion Tools.tbx\RasterToASCII" Date="20260424" Time="110045">RasterToASCII G:\Boshi_Suitability_Model\A_DuiqiDataset\2015\bio18_2015.tif G:\Boshi_Suitability_Model\A_DuiqiDataset\ASCII2015_2\bio18_2015.asc</Process></lineage></DataProperties></Esri></metadata>
