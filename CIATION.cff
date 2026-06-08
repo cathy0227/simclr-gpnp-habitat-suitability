@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the associated publication."
+title: "A self-supervised contrastive learning framework for giant panda habitat suitability modeling with the ecologically constrained background sampling strategy"
+type: software
+Authors: 
+Citation:
+
+repository-code: "https://github.com/cathy0227/simclr-gpnp-habitat-suitability"
+
+license: MIT
+
+abstract: >
+Code for habitat suitability modeling in Giant Panda National Park
+using self-supervised contrastive learning (SimCLR) and
+ecologically constrained background sampling.
