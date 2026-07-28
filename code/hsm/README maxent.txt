@@ -69,9 +69,7 @@ Evaluation Metrics
   - ROC-AUC
   - PR-AUC (and normalized PR-AUC)
   - Continuous Boyce Index (CBI)
-  - TSS (True Skill Statistic)
-  - Sensitivity / Specificity
-  - ECE (Expected Calibration Error)
+  - Specificity
 
 
 Requirements
