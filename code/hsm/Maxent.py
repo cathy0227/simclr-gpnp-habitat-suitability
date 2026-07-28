@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, GroupKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
+from scipy.stats import spearmanr
 import glob
 from tqdm import tqdm
 import elapid as ela
@@ -15,29 +16,22 @@ import warnings
 from datetime import datetime
 warnings.filterwarnings('ignore')
 
-# --- Configuration (modify these parameters as needed) ---
+# --- Configuration (edit paths to match your local layout) ---
 date = datetime.now().strftime('%Y%m%d')
 points_num = 1715
-try_times = str(points_num) + 'p_' + date   #auto name folder
+try_times = str(points_num) + 'p_' + date
 
-# Species presence points file path (CSV or Shapefile)
-PRESENCE_POINTS_FILE = r".\data\occruence\Rarefy GP occurence example.csv"
-BACKGROUND_POINTS_FILE = r".\data\background\MCMC samples\background_points_duoyangxing_1715p_1x\mcmc_background_points_duoyangxing_1715p_1x.csv"
+PRESENCE_POINTS_FILE = r"data/presence_points.csv"
+BACKGROUND_POINTS_FILE = r"data/background_points.csv"
 
-# Column name for latitude in presence CSV
 PRESENCE_POINTS_LONGITUDE_COL = 'Longitude'
 PRESENCE_POINTS_LATITUDE_COL = 'Latitude'
 
-# [Run mode control]
-# When True, skip model training and directly use saved model for HSI mapping.
 SKIP_TRAINING = False
 
-# [Environmental variable raster directory]
-ENV_VAR_RASTER_FILES = r“data\environmental\Ascii”
-# Study area boundary shapefile
-STUDY_AREA_SHP_FILE = r"shap file here"
-# All outputs will be saved here
-OUTPUT_DIR = fr"results\Maxent_{try_times}"  # output path ".\results\Maxent_evaluation_mapping\"
+ENV_VAR_RASTER_FILES = r"data/env_rasters"
+STUDY_AREA_SHP_FILE = r"data/study_area.shp"
+OUTPUT_DIR = f"output/Maxent_{try_times}/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # [Data splitting parameters]
@@ -298,10 +292,53 @@ def calculate_expected_calibration_error(y_true, y_prob, n_bins=10):
     return ece
 
 
+def calculate_boyce_index(presence_predictions, background_predictions, num_bins=None):
+    """
+    Compute the Continuous Boyce Index (Spearman correlation between predicted-to-expected
+    frequency ratio and bin centers).
+
+    Args:
+        presence_predictions: model predictions at presence point locations
+        background_predictions: model predictions at background point locations
+        num_bins: number of bins (auto-determined if None)
+
+    Returns:
+        float: Boyce Index value (Spearman r), range ~ -1 to 1, higher is better
+    """
+    presence_predictions = np.array(presence_predictions)
+    background_predictions = np.array(background_predictions)
+
+    if num_bins is None:
+        n_background = len(background_predictions)
+        num_bins = max(5, min(30, int(np.log2(n_background))))
+
+    min_pred = min(np.min(presence_predictions), np.min(background_predictions))
+    max_pred = max(np.max(presence_predictions), np.max(background_predictions))
+    bin_edges = np.linspace(min_pred, max_pred, num_bins + 1)
+
+    p_counts = np.histogram(presence_predictions, bins=bin_edges)[0]
+    b_counts = np.histogram(background_predictions, bins=bin_edges)[0]
+
+    # Add small constant to avoid division by zero
+    p_freq = (p_counts + 0.01) / (len(presence_predictions) + 0.01 * num_bins)
+    b_freq = (b_counts + 0.01) / (len(background_predictions) + 0.01 * num_bins)
+    b_freq[b_freq == 0] = 1e-6
+
+    pred_ratio = p_freq / b_freq
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    valid_mask = ~np.isnan(pred_ratio) & (pred_ratio != 0)
+    if np.sum(valid_mask) < 2:
+        return 0.0
+
+    correlation, _ = spearmanr(bin_centers[valid_mask], pred_ratio[valid_mask])
+    return correlation if not np.isnan(correlation) else 0.0
+
+
 def calculate_metrics(presence_predictions, background_predictions, threshold=None):
     """
-    Compute evaluation metrics: ROC-AUC, PR-AUC, TSS, Specificity, ECE.
-    Returns a dict with keys: auc, pr_auc, tss, specificity, ece, threshold.
+    Compute evaluation metrics: ROC-AUC, PR-AUC, Normalized_PR-AUC, Boyce Index,
+    Sensitivity, ECE, TSS, Specificity, threshold.
     """
     presence_predictions = np.array(presence_predictions)
     background_predictions = np.array(background_predictions)
@@ -312,18 +349,31 @@ def calculate_metrics(presence_predictions, background_predictions, threshold=No
         _, threshold = calculate_tss(presence_predictions, background_predictions)
 
     binary_predictions = (all_predictions >= threshold).astype(int)
+    tp = np.sum((all_labels == 1) & (binary_predictions == 1))
+    fn = np.sum((all_labels == 1) & (binary_predictions == 0))
     tn = np.sum((all_labels == 0) & (binary_predictions == 0))
     fp = np.sum((all_labels == 0) & (binary_predictions == 1))
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
 
     auc = roc_auc_score(all_labels, all_predictions)
     pr_auc = average_precision_score(all_labels, all_predictions)
     ece = calculate_expected_calibration_error(all_labels, all_predictions)
     tss, _ = calculate_tss(presence_predictions, background_predictions, threshold=threshold)
 
+    # Normalized PR-AUC: (PR-AUC - pi) / (1 - pi), where pi = prevalence (baseline)
+    pi = np.mean(all_labels)
+    normalized_pr_auc = (pr_auc - pi) / (1 - pi) if (1 - pi) > 0 else 0.0
+
+    # Boyce Index
+    boyce_index = calculate_boyce_index(presence_predictions, background_predictions)
+
     return {
         'auc': auc,
         'pr_auc': pr_auc,
+        'normalized_pr_auc': normalized_pr_auc,
+        'boyce_index': boyce_index,
+        'sensitivity': sensitivity,
         'tss': tss,
         'specificity': specificity,
         'ece': ece,
@@ -437,12 +487,18 @@ def train_with_cross_validation(all_env_data, env_var_names_list, model_output_p
                 'fold': fold + 1,
                 'train_auc': float(train_m['auc']),
                 'train_pr_auc': float(train_m['pr_auc']),
+                'train_normalized_pr_auc': float(train_m['normalized_pr_auc']),
+                'train_boyce_index': float(train_m['boyce_index']),
+                'train_sensitivity': float(train_m['sensitivity']),
                 'train_tss': float(train_m['tss']),
                 'train_specificity': float(train_m['specificity']),
                 'train_ece': float(train_m['ece']),
                 'train_threshold': float(train_m['threshold']),
                 'val_auc': float(val_m['auc']),
                 'val_pr_auc': float(val_m['pr_auc']),
+                'val_normalized_pr_auc': float(val_m['normalized_pr_auc']),
+                'val_boyce_index': float(val_m['boyce_index']),
+                'val_sensitivity': float(val_m['sensitivity']),
                 'val_tss': float(val_m['tss']),
                 'val_specificity': float(val_m['specificity']),
                 'val_ece': float(val_m['ece']),
@@ -469,9 +525,35 @@ def train_with_cross_validation(all_env_data, env_var_names_list, model_output_p
         results_df.to_csv(os.path.join(OUTPUT_DIR, f"cross_validation_results_{try_times}.csv"), index=False)
 
         print("\nCross-validation summary (validation set):")
-        for metric in ['auc', 'pr_auc', 'tss', 'specificity', 'ece']:
+        for metric in ['auc', 'pr_auc', 'normalized_pr_auc', 'boyce_index', 'sensitivity', 'tss', 'specificity', 'ece']:
             vals = [m[f'val_{metric}'] for m in fold_metrics]
             print(f"  {metric.upper()}: {np.mean(vals):.4f} ± {np.std(vals):.4f}")
+
+        # Generate cv_summary CSV with Mean, Std_Dev, Min, Max, Median
+        summary_metrics = ['auc', 'pr_auc', 'normalized_pr_auc', 'boyce_index', 'sensitivity', 'ece']
+        metric_display_names = {
+            'auc': 'ROC_AUC',
+            'pr_auc': 'PR_AUC',
+            'normalized_pr_auc': 'NORMALIZED_PR_AUC',
+            'boyce_index': 'BOYCE_INDEX',
+            'sensitivity': 'SENSITIVITY',
+            'ece': 'ECE',
+        }
+        summary_rows = []
+        for metric in summary_metrics:
+            vals = np.array([m[f'val_{metric}'] for m in fold_metrics])
+            summary_rows.append({
+                'Metric': metric_display_names.get(metric, metric.upper()),
+                'Mean': round(float(np.mean(vals)), 4),
+                'Std_Dev': round(float(np.std(vals)), 4),
+                'Min': round(float(np.min(vals)), 4),
+                'Max': round(float(np.max(vals)), 4),
+                'Median': round(float(np.median(vals)), 4),
+            })
+        summary_df = pd.DataFrame(summary_rows)
+        summary_path = os.path.join(OUTPUT_DIR, f"cv_summary_{try_times}.csv")
+        summary_df.to_csv(summary_path, index=False)
+        print(f"\nCV summary saved to {summary_path}")
 
         avg_train_auc = np.mean([m['train_auc'] for m in fold_metrics])
         avg_val_auc = np.mean([m['val_auc'] for m in fold_metrics])
