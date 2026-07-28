@@ -1,0 +1,13 @@
+Metric,Value,Description
+ROC-AUC,0.9131,Area Under ROC Curve
+PR-AUC,0.8988,Area Under Precision-Recall Curve
+CBI,1.0,Continuous Boyce Index
+Sensitivity,0.8006,True Positive Rate (at max-TSS threshold)
+,,
+Model Parameters,,
+Model Architecture,SimCLR + RandomForest,
+Spatial Block Size,50 km,
+Cross-Validation Folds,5,
+Random Seed,18,
+Calibration Method,sigmoid,
+Variable Selection,Disabled,

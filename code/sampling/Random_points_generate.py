@@ -3,8 +3,7 @@ Random background point sampler for species distribution modeling.
 
 Generates background (pseudo-absence) points by uniform random sampling
 inside the study-area polygon. Optionally enforces a minimum-distance
-constraint to known presence points. Reuses the quality-evaluation toolkit
-from `MCMC_points_generate`.
+constraint to known presence points.
 """
 
 import os
@@ -18,9 +17,6 @@ import pandas as pd
 import rasterio
 from shapely.geometry import Point
 from tqdm import tqdm
-
-# Reuse the evaluator from the MCMC module instead of duplicating ~200 lines
-from MCMC_points_generate import evaluate_background_quality
 
 warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarning)
 
@@ -104,10 +100,8 @@ def generate_background_points(
     presence_csv,
     shapefile_path,
     num_background=5000,
-    env_dir=None,
     output_csv='random_background_points.csv',
     min_distance_to_presence=None,      # Min. distance constraint (degrees)
-    evaluate_quality=True,
     random_seed=42
 ):
     """
@@ -117,11 +111,8 @@ def generate_background_points(
         presence_csv: Path to presence-points CSV (Longitude/Latitude columns).
         shapefile_path: Path to study-area shapefile.
         num_background: Number of background points to generate.
-        env_dir: Optional directory containing environmental rasters
-            (used only for quality evaluation).
         output_csv: Output CSV path.
         min_distance_to_presence: Optional minimum distance to presence points.
-        evaluate_quality: Whether to run the numeric quality evaluation.
         random_seed: Random seed for reproducibility.
     """
     np.random.seed(random_seed)
@@ -142,87 +133,28 @@ def generate_background_points(
     background_df.to_csv(output_csv, index=False)
     print(f"Generated {len(background_df)} background points -> {output_csv}")
 
-    if evaluate_quality:
-        print("\n" + "=" * 50)
-        print("Starting background point quality evaluation...")
-        print("=" * 50)
-
-        quality_results = evaluate_background_quality(
-            shapefile_path=shapefile_path,
-            presence_csv=presence_csv,
-            background_csv=output_csv,
-            env_dir=env_dir
-        )
-
-        print("\n" + "=" * 50)
-        print("Quality evaluation summary:")
-        print("=" * 50)
-
-        uniformity = quality_results['spatial_uniformity']
-        print("Spatial uniformity:")
-        print(f"   - Grid coverage: {uniformity['coverage_ratio']:.2%}")
-        print(f"   - Coefficient of variation: {uniformity['coefficient_of_variation']:.3f}")
-
-        distance_stats = quality_results['distance_analysis']
-        print("\nDistance to presence points:")
-        print(f"   - Mean: {distance_stats['mean_distance']:.3f}")
-        print(f"   - Median: {distance_stats['median_distance']:.3f}")
-        print(f"   - Min: {distance_stats['min_distance']:.3f}")
-
-        clustering = quality_results['spatial_clustering']
-        print("\nSpatial clustering:")
-        print(f"   - Clustering index: {clustering['clustering_index']:.3f}")
-        if clustering['clustering_index'] < 0.8:
-            print("   - Interpretation: clustered distribution")
-        elif clustering['clustering_index'] > 1.2:
-            print("   - Interpretation: dispersed distribution")
-        else:
-            print("   - Interpretation: approximately random distribution")
-
-        if quality_results.get('environmental_difference'):
-            env_diff = quality_results['environmental_difference']
-            ks_results = env_diff['ks_results']
-            significant_count = sum(1 for r in ks_results if r['p_value'] < 0.05)
-
-            print("\nEnvironmental distribution differences:")
-            print(f"   - Total environmental variables: {len(ks_results)}")
-            print(f"   - Significant (p<0.05): {significant_count}")
-            print(f"   - Significant ratio: {significant_count / len(ks_results):.1%}")
-
-            if significant_count > len(ks_results) * 0.7:
-                print("   - Verdict: large environmental differences (good)")
-            elif significant_count > len(ks_results) * 0.3:
-                print("   - Verdict: moderate environmental differences")
-            else:
-                print("   - Verdict: small environmental differences (warning)")
-
-        print("\n" + "=" * 50)
-        print("Quality evaluation complete.")
-        print("=" * 50)
-
     return background_df
 
 
 if __name__ == "__main__":
     # Configuration (same inputs as the MCMC script)
-    presence_csv = r".\data\occruence\Rarefy GP occurence example.csv"
-    shapefile_path = r"shapfile here"
-    env_dir = r".\data\environmental\Ascii"
+    presence_csv = r"G:\GIANT PANDA Presidences\maxent filter\GP_spatially rarefy occurence data\Spatially rarefy occurence data GPNP_rarefied_points.csv"
+    shapefile_path = r"G:\##GPNP_Shapfile\GPNP_Shapfile.shp"
 
     presence_df = pd.read_csv(presence_csv)
     num_presence = len(presence_df)
     print(f"Number of presence points: {num_presence}")
 
     # Background-point counts to generate, expressed as multipliers of presences
-    multipliers = [0.1, 0.2, 0.5,1,2,5,10]
+    multipliers = [0.1, 0.2, 0.5, 1, 2, 5, 10]
     date = datetime.now().strftime('%Y%m%d-%H%M')
 
     for multiplier in multipliers:
         points_num = num_presence * multiplier
         output_name = f'{points_num}p_{multiplier}x_{date}'
         output_csv = (
-            fr".\data\background\random samples"
-            fr"\background_points_random_{output_name}"
+            fr"G:\Boshi_Suitability_Model\B_Suitablity Model\1.background_points_random"
+            fr"\background_points_random_xinbianliang{output_name}"
             fr"\random_background_points_{output_name}.csv"
         )
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)
@@ -235,10 +167,8 @@ if __name__ == "__main__":
             presence_csv=presence_csv,
             shapefile_path=shapefile_path,
             num_background=points_num,
-            env_dir=env_dir,
             output_csv=output_csv,
             min_distance_to_presence=None,  # No distance constraint
-            evaluate_quality=True,
             random_seed=42
         )
 
