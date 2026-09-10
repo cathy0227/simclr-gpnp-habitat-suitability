@@ -45,11 +45,14 @@ FEATURE_TYPES = ['linear', 'hinge']
 TAU = 0.5
 CLAMP = True
 
+# Only the global regularization multiplier (RM) is increased above the default
+# (elapid default = 1.5); it was selected by spatial-block CV over RM in {1,2,3,4,6}.
 BETA_MULTIPLIER = 6.0
-BETA_LQP = 2.5
-BETA_HINGE = 5.0
-BETA_THRESHOLD = 0.0
-BETA_CATEGORICAL = 2.0
+# Per-feature-class regularization coefficients kept at the elapid defaults (1.0).
+BETA_LQP = 1.0
+BETA_HINGE = 1.0
+BETA_THRESHOLD = 1.0
+BETA_CATEGORICAL = 1.0
 
 N_HINGE_FEATURES = 3
 N_THRESHOLD_FEATURES = 0
@@ -242,54 +245,23 @@ def prepare_and_split_data(presence_points_file, env_var_raster_files, study_are
     return X_env_data, all_points_with_env_gdf, env_var_names
 
 
-def calculate_tss(presence_predictions, background_predictions, threshold=None):
-    """
-    Compute TSS (True Skill Statistic) and its optimal threshold.
-    If threshold is None, finds the threshold that maximizes TSS.
-    Returns (tss_value, threshold).
-    """
-    presence_predictions = np.array(presence_predictions)
-    background_predictions = np.array(background_predictions)
+def _find_max_tss_threshold(presence_predictions, background_predictions):
+    """Find threshold maximizing TSS (used internally for sensitivity calculation)."""
+    all_preds = np.concatenate([presence_predictions, background_predictions])
+    thresholds = np.unique(all_preds)
+    if len(thresholds) > 100:
+        thresholds = np.percentile(all_preds, np.linspace(0, 100, 101))
 
-    if threshold is None:
-        all_preds = np.concatenate([presence_predictions, background_predictions])
-        thresholds = np.unique(all_preds)
-        if len(thresholds) > 100:
-            thresholds = np.percentile(all_preds, np.linspace(0, 100, 101))
-
-        best_tss, best_threshold = -np.inf, 0
-        for t in thresholds:
-            tp = np.sum(presence_predictions >= t)
-            tn = np.sum(background_predictions < t)
-            sensitivity = tp / len(presence_predictions) if len(presence_predictions) > 0 else 0
-            specificity = tn / len(background_predictions) if len(background_predictions) > 0 else 0
-            tss = sensitivity + specificity - 1
-            if tss > best_tss:
-                best_tss, best_threshold = tss, t
-        threshold = best_threshold
-
-    tp = np.sum(presence_predictions >= threshold)
-    tn = np.sum(background_predictions < threshold)
-    sensitivity = tp / len(presence_predictions) if len(presence_predictions) > 0 else 0
-    specificity = tn / len(background_predictions) if len(background_predictions) > 0 else 0
-    tss = sensitivity + specificity - 1
-    return tss, threshold
-
-
-def calculate_expected_calibration_error(y_true, y_prob, n_bins=10):
-    """
-    Compute Expected Calibration Error (ECE) using equal-width bins.
-    """
-    bin_boundaries = np.linspace(0, 1, n_bins + 1)
-    ece = 0.0
-    for lower, upper in zip(bin_boundaries[:-1], bin_boundaries[1:]):
-        in_bin = (y_prob > lower) & (y_prob <= upper)
-        prop_in_bin = in_bin.mean()
-        if prop_in_bin > 0:
-            accuracy_in_bin = y_true[in_bin].mean()
-            avg_confidence_in_bin = y_prob[in_bin].mean()
-            ece += np.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
-    return ece
+    best_tss, best_threshold = -np.inf, 0.5
+    for t in thresholds:
+        tp = np.sum(presence_predictions >= t)
+        tn = np.sum(background_predictions < t)
+        sens = tp / len(presence_predictions) if len(presence_predictions) > 0 else 0
+        spec = tn / len(background_predictions) if len(background_predictions) > 0 else 0
+        tss = sens + spec - 1
+        if tss > best_tss:
+            best_tss, best_threshold = tss, t
+    return best_threshold
 
 
 def calculate_boyce_index(presence_predictions, background_predictions, num_bins=None):
@@ -335,37 +307,25 @@ def calculate_boyce_index(presence_predictions, background_predictions, num_bins
     return correlation if not np.isnan(correlation) else 0.0
 
 
-def calculate_metrics(presence_predictions, background_predictions, threshold=None):
-    """
-    Compute evaluation metrics: ROC-AUC, PR-AUC, Normalized_PR-AUC, Boyce Index,
-    Sensitivity, ECE, TSS, Specificity, threshold.
-    """
+def calculate_metrics(presence_predictions, background_predictions):
+    """Compute: ROC-AUC, PR-AUC, Normalized PR-AUC, CBI, Sensitivity (at max-TSS threshold)."""
     presence_predictions = np.array(presence_predictions)
     background_predictions = np.array(background_predictions)
     all_predictions = np.concatenate([presence_predictions, background_predictions])
     all_labels = np.concatenate([np.ones(len(presence_predictions)), np.zeros(len(background_predictions))])
 
-    if threshold is None:
-        _, threshold = calculate_tss(presence_predictions, background_predictions)
-
-    binary_predictions = (all_predictions >= threshold).astype(int)
-    tp = np.sum((all_labels == 1) & (binary_predictions == 1))
-    fn = np.sum((all_labels == 1) & (binary_predictions == 0))
-    tn = np.sum((all_labels == 0) & (binary_predictions == 0))
-    fp = np.sum((all_labels == 0) & (binary_predictions == 1))
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+    threshold = _find_max_tss_threshold(presence_predictions, background_predictions)
+    # Sensitivity (true positive rate): fraction of presence points correctly
+    # classified as suitable at the max-TSS threshold.
+    tp = np.sum(presence_predictions >= threshold)
+    sensitivity = tp / len(presence_predictions) if len(presence_predictions) > 0 else 0
 
     auc = roc_auc_score(all_labels, all_predictions)
     pr_auc = average_precision_score(all_labels, all_predictions)
-    ece = calculate_expected_calibration_error(all_labels, all_predictions)
-    tss, _ = calculate_tss(presence_predictions, background_predictions, threshold=threshold)
 
-    # Normalized PR-AUC: (PR-AUC - pi) / (1 - pi), where pi = prevalence (baseline)
     pi = np.mean(all_labels)
     normalized_pr_auc = (pr_auc - pi) / (1 - pi) if (1 - pi) > 0 else 0.0
 
-    # Boyce Index
     boyce_index = calculate_boyce_index(presence_predictions, background_predictions)
 
     return {
@@ -374,10 +334,6 @@ def calculate_metrics(presence_predictions, background_predictions, threshold=No
         'normalized_pr_auc': normalized_pr_auc,
         'boyce_index': boyce_index,
         'sensitivity': sensitivity,
-        'tss': tss,
-        'specificity': specificity,
-        'ece': ece,
-        'threshold': threshold
     }
 
 
@@ -477,11 +433,9 @@ def train_with_cross_validation(all_env_data, env_var_names_list, model_output_p
 
             print(f"Fold {fold + 1} results:")
             print(f"  Train - AUC: {train_m['auc']:.4f}, PR-AUC: {train_m['pr_auc']:.4f}, "
-                  f"TSS: {train_m['tss']:.4f}, Specificity: {train_m['specificity']:.4f}, "
-                  f"ECE: {train_m['ece']:.4f}")
+                  f"CBI: {train_m['boyce_index']:.4f}, Sensitivity: {train_m['sensitivity']:.4f}")
             print(f"  Val   - AUC: {val_m['auc']:.4f}, PR-AUC: {val_m['pr_auc']:.4f}, "
-                  f"TSS: {val_m['tss']:.4f}, Specificity: {val_m['specificity']:.4f}, "
-                  f"ECE: {val_m['ece']:.4f}")
+                  f"CBI: {val_m['boyce_index']:.4f}, Sensitivity: {val_m['sensitivity']:.4f}")
 
             fold_metrics.append({
                 'fold': fold + 1,
@@ -490,19 +444,11 @@ def train_with_cross_validation(all_env_data, env_var_names_list, model_output_p
                 'train_normalized_pr_auc': float(train_m['normalized_pr_auc']),
                 'train_boyce_index': float(train_m['boyce_index']),
                 'train_sensitivity': float(train_m['sensitivity']),
-                'train_tss': float(train_m['tss']),
-                'train_specificity': float(train_m['specificity']),
-                'train_ece': float(train_m['ece']),
-                'train_threshold': float(train_m['threshold']),
                 'val_auc': float(val_m['auc']),
                 'val_pr_auc': float(val_m['pr_auc']),
                 'val_normalized_pr_auc': float(val_m['normalized_pr_auc']),
                 'val_boyce_index': float(val_m['boyce_index']),
                 'val_sensitivity': float(val_m['sensitivity']),
-                'val_tss': float(val_m['tss']),
-                'val_specificity': float(val_m['specificity']),
-                'val_ece': float(val_m['ece']),
-                'val_threshold': float(val_m['threshold']),
             })
 
             # Select best model: validation AUC minus overfitting penalty
@@ -525,19 +471,18 @@ def train_with_cross_validation(all_env_data, env_var_names_list, model_output_p
         results_df.to_csv(os.path.join(OUTPUT_DIR, f"cross_validation_results_{try_times}.csv"), index=False)
 
         print("\nCross-validation summary (validation set):")
-        for metric in ['auc', 'pr_auc', 'normalized_pr_auc', 'boyce_index', 'sensitivity', 'tss', 'specificity', 'ece']:
+        for metric in ['auc', 'pr_auc', 'normalized_pr_auc', 'boyce_index', 'sensitivity']:
             vals = [m[f'val_{metric}'] for m in fold_metrics]
             print(f"  {metric.upper()}: {np.mean(vals):.4f} ± {np.std(vals):.4f}")
 
-        # Generate cv_summary CSV with Mean, Std_Dev, Min, Max, Median
-        summary_metrics = ['auc', 'pr_auc', 'normalized_pr_auc', 'boyce_index', 'sensitivity', 'ece']
+        # Generate cv_summary CSV
+        summary_metrics = ['auc', 'pr_auc', 'normalized_pr_auc', 'boyce_index', 'sensitivity']
         metric_display_names = {
             'auc': 'ROC_AUC',
             'pr_auc': 'PR_AUC',
             'normalized_pr_auc': 'NORMALIZED_PR_AUC',
             'boyce_index': 'BOYCE_INDEX',
             'sensitivity': 'SENSITIVITY',
-            'ece': 'ECE',
         }
         summary_rows = []
         for metric in summary_metrics:
@@ -614,20 +559,19 @@ def train_final_model_and_evaluate(all_env_data, background_env_array, env_var_n
         print("\nFinal model evaluation (training data - for reference only, may be optimistic):")
         print(f"  AUC: {final_m['auc']:.4f}")
         print(f"  PR-AUC: {final_m['pr_auc']:.4f}")
-        print(f"  TSS: {final_m['tss']:.4f}")
-        print(f"  Specificity: {final_m['specificity']:.4f}")
-        print(f"  ECE: {final_m['ece']:.4f}")
-        print(f"  Threshold: {final_m['threshold']:.4f}")
+        print(f"  Normalized PR-AUC: {final_m['normalized_pr_auc']:.4f}")
+        print(f"  CBI: {final_m['boyce_index']:.4f}")
+        print(f"  Sensitivity: {final_m['sensitivity']:.4f}")
         print("Note: Use cross-validation results for unbiased performance estimates.")
 
         # Save evaluation metrics
         final_evaluation_df = pd.DataFrame({
-            'Metric': ['ROC-AUC', 'PR-AUC', 'TSS', 'Specificity', 'ECE', 'Threshold'],
-            'Value': [final_m['auc'], final_m['pr_auc'], final_m['tss'],
-                      final_m['specificity'], final_m['ece'], final_m['threshold']],
+            'Metric': ['ROC-AUC', 'PR-AUC', 'Normalized_PR-AUC', 'CBI', 'Sensitivity'],
+            'Value': [final_m['auc'], final_m['pr_auc'], final_m['normalized_pr_auc'],
+                      final_m['boyce_index'], final_m['sensitivity']],
             'Note': ['Area Under ROC Curve', 'Area Under Precision-Recall Curve',
-                     'True Skill Statistic', 'True Negative Rate',
-                     'Expected Calibration Error', 'Optimal Classification Threshold']
+                     'Normalized PR-AUC: (PR-AUC - pi) / (1 - pi)',
+                     'Continuous Boyce Index', 'True Positive Rate at max-TSS threshold']
         })
         eval_path = os.path.join(OUTPUT_DIR, f"final_model_evaluation_{try_times}.csv")
         final_evaluation_df.to_csv(eval_path, index=False)

@@ -57,8 +57,6 @@ Model Configuration
 Key MaxEnt hyperparameters (set in Maxent.py or overridden by batch config):
   - feature_types: ['linear', 'hinge']
   - beta_multiplier: 6.0 (regularization strength)
-  - beta_hinge: 5.0
-  - n_hinge_features: 3
   - scorer: 'aicc'
   - spatial_block_size: 50 km (for GroupKFold CV)
   - k_folds: 5
