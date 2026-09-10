@@ -687,34 +687,72 @@ def train_rf_classifier(model, train_loader, val_loader, calibration_method='iso
 
 
 def calculate_boyce_index(presence_predictions, background_predictions, num_bins=None):
-    """Continuous Boyce Index: Spearman correlation of P/E ratio vs predicted values."""
-    presence_predictions = np.array(presence_predictions)
-    background_predictions = np.array(background_predictions)
+    """Compute moving-window Continuous Boyce Index following Hirzel et al. (2006).
 
-    if num_bins is None:
-        num_bins = max(5, min(30, int(np.log2(len(background_predictions)))))
+    The window width is 10% of the background prediction range. One hundred
+    equally spaced windows span the pooled presence/background prediction range.
+    Windows without background predictions are excluded, and consecutive
+    duplicate P/E ratios are collapsed before calculating Spearman correlation.
+    ``num_bins`` is retained only for backward-compatible calls.
+    """
+    _ = num_bins
+    presence_predictions = np.asarray(presence_predictions, dtype=float).ravel()
+    background_predictions = np.asarray(background_predictions, dtype=float).ravel()
 
-    min_pred = min(np.min(presence_predictions), np.min(background_predictions))
-    max_pred = max(np.max(presence_predictions), np.max(background_predictions))
-    bin_edges = np.linspace(min_pred, max_pred, num_bins + 1)
+    if (not np.isfinite(presence_predictions).all()
+            or not np.isfinite(background_predictions).all()):
+        raise ValueError("CBI inputs must be finite; no records were removed silently.")
+    if len(presence_predictions) == 0 or len(background_predictions) == 0:
+        return np.nan
 
-    p_counts = np.histogram(presence_predictions, bins=bin_edges)[0]
-    b_counts = np.histogram(background_predictions, bins=bin_edges)[0]
+    score_min = min(presence_predictions.min(), background_predictions.min())
+    score_max = max(presence_predictions.max(), background_predictions.max())
+    window_width = 0.1 * np.ptp(background_predictions)
+    if window_width <= 0 or score_max <= score_min:
+        return np.nan
 
-    p_freq = (p_counts + 0.01) / (len(presence_predictions) + 0.01 * num_bins)
-    b_freq = (b_counts + 0.01) / (len(background_predictions) + 0.01 * num_bins)
-    b_freq[b_freq == 0] = 1e-6
+    n_windows = 100
+    window_starts = np.linspace(score_min, score_max - window_width, n_windows)
+    window_ends = window_starts + window_width
+    window_ends[-1] = score_max
+    window_centers = (window_starts + window_ends) / 2
 
-    pred_ratio = p_freq / b_freq
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    valid_mask = ~np.isnan(pred_ratio) & (pred_ratio != 0)
+    sorted_presence = np.sort(presence_predictions)
+    sorted_background = np.sort(background_predictions)
+    presence_counts = (
+        np.searchsorted(sorted_presence, window_ends, side="right")
+        - np.searchsorted(sorted_presence, window_starts, side="left")
+    )
+    background_counts = (
+        np.searchsorted(sorted_background, window_ends, side="right")
+        - np.searchsorted(sorted_background, window_starts, side="left")
+    )
 
-    if np.sum(valid_mask) < 2:
-        print('Insufficient data for Boyce Index')
-        return 0.0
+    predicted_to_expected = np.divide(
+        presence_counts / len(presence_predictions),
+        background_counts / len(background_predictions),
+        out=np.full(n_windows, np.nan),
+        where=background_counts > 0,
+    )
+    predicted_to_expected = np.round(predicted_to_expected, 10)
 
-    correlation, _ = spearmanr(bin_centers[valid_mask], pred_ratio[valid_mask])
-    return 0.0 if np.isnan(correlation) else correlation
+    valid = np.flatnonzero(np.isfinite(predicted_to_expected))
+    if len(valid):
+        keep = valid[np.r_[
+            True,
+            predicted_to_expected[valid][1:] != predicted_to_expected[valid][:-1],
+        ]]
+    else:
+        keep = valid
+
+    if len(keep) < 2 or np.ptp(predicted_to_expected[keep]) <= 0:
+        return np.nan
+
+    correlation, _ = spearmanr(
+        window_centers[keep], predicted_to_expected[keep]
+    )
+    return float(correlation) if np.isfinite(correlation) else np.nan
+
 
 
 METRIC_KEYS = ['roc_auc', 'pr_auc', 'boyce_index', 'sensitivity']
